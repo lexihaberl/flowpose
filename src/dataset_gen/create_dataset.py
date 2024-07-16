@@ -154,9 +154,9 @@ tables = create_table()
 table_surface = get_table_surface(tables, "Cube")
 placed_objects = place_objects(objects, table_surface)
 
-partitions_radius = 1
-partitions_elevation = 1
-partitions_azimuth = 1
+partitions_radius = 4
+partitions_elevation = 4
+partitions_azimuth = 4
 # only look at objects from 'above' (we assume the object is placed on a plane e.g. table)
 radius_range = [0.3, 0.9]
 elevation_angle_range = [0, 90]
