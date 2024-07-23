@@ -29,7 +29,7 @@ def load_objects(path, category_names, num_meshes_per_category=1):
     return objects
 
 
-def create_room(cc_texture_path=Path("data", "resources")):
+def create_room():
     room_planes = [
         bproc.object.create_primitive("PLANE", scale=[2, 2, 1]),
         bproc.object.create_primitive(
@@ -45,8 +45,6 @@ def create_room(cc_texture_path=Path("data", "resources")):
             "PLANE", scale=[2, 2, 1], location=[-2, 0, 2], rotation=[0, 1.570796, 0]
         ),
     ]
-    cc_textures = bproc.loader.load_ccmaterials(cc_texture_path)
-    random_cc_texture = np.random.choice(cc_textures)
     for plane in room_planes:
         plane.enable_rigidbody(
             False,
@@ -56,7 +54,7 @@ def create_room(cc_texture_path=Path("data", "resources")):
             angular_damping=0.99,
         )
         plane.set_cp("category_id", 1000)
-        plane.replace_materials(random_cc_texture)
+    return room_planes
 
 
 def create_lighting():
@@ -66,11 +64,12 @@ def create_lighting():
     light_plane.set_name("light_plane")
     light_plane_material = bproc.material.create("light_material")
     light_plane_material.make_emissive(
-        emission_strength=np.random.uniform(3, 6),
+        emission_strength=10,
         emission_color=np.random.uniform([0.5, 0.5, 0.5, 1.0], [1.0, 1.0, 1.0, 1.0]),
     )
     light_plane.replace_materials(light_plane_material)
     light_plane.set_cp("category_id", 2000)
+    return light_plane
 
 
 def create_table(table_mesh_path=Path("data", "table_mesh", "table.obj")):
@@ -110,20 +109,21 @@ def sample_initial_pose(obj):
             objects_to_sample_on=table_surface,
             min_height=1,
             max_height=4,
-            face_sample_range=[0.4, 0.6],
+            face_sample_range=[0.2, 0.8],
         )
     )
 
 
-def place_objects(objects, surface):
+def place_object(object, surface):
     placed_objects = bproc.object.sample_poses_on_surface(
-        objects_to_sample=objects,
+        objects_to_sample=object,
         surface=surface,
         sample_pose_func=sample_initial_pose,
         min_distance=0.01,
         max_distance=0.2,
     )
-    return placed_objects
+    assert len(placed_objects) == 1
+    return placed_objects[0]
 
 
 camera_width = 640
@@ -137,22 +137,23 @@ camera_intrinsics_sasha = np.array(
 )
 output_dir = Path("output", "dataset_rendered")
 mesh_dir = Path("data", "housecat6d_meshes")
+cc_textures_path = Path("data", "cc_textures")
 if os.path.exists(output_dir):
     raise ValueError("Output directory already exists")
 
 bproc.init()
-
 bproc.camera.set_intrinsics_from_K_matrix(
     camera_intrinsics_sasha, camera_width, camera_height
 )
 
-objects = load_objects(mesh_dir, ["shoe"], 2)
 
-create_room()
-create_lighting()
+objects = load_objects(mesh_dir, ["shoe", "cutlery"], 2000)
+room_planes = create_room()
+light_plane = create_lighting()
+cc_textures = bproc.loader.load_ccmaterials(cc_textures_path)
 tables = create_table()
+original_table_material = tables[0].get_materials()[0]
 table_surface = get_table_surface(tables, "Cube")
-placed_objects = place_objects(objects, table_surface)
 
 partitions_radius = 4
 partitions_elevation = 4
@@ -169,18 +170,29 @@ azimuth_angle_diff = azimuth_angle_range[1] - azimuth_angle_range[0]
 bproc.renderer.enable_depth_output(activate_antialiasing=False)
 bproc.renderer.enable_segmentation_output(map_by=["name", "instance"])
 
-for obj in placed_objects:
+for obj in objects:
+    random_table_texture = np.random.choice(cc_textures)
+    random_room_texture = np.random.choice(cc_textures)
+    for table_obj in tables:
+        # if uniform < 0.3 -> use original texture
+        if np.random.uniform() < 0.3:
+            table_obj.replace_materials(original_table_material)
+        else:
+            table_obj.replace_materials(random_table_texture)
+    for room_obj in room_planes:
+        room_obj.replace_materials(random_room_texture)
+    obj = place_object([obj], table_surface)
     poses = {}
     bproc.utility.reset_keyframes()
     obj.hide(False)
     light_point = bproc.types.Light()
-    light_point.set_energy(200)
+    light_point.set_energy(25)
     light_point.set_color(np.random.uniform([0.5, 0.5, 0.5], [1, 1, 1]))
     location = bproc.sampler.shell(
-        center=[0, 0, 0],
-        radius_min=1,
+        center=[0, 0, 0.5],
+        radius_min=0.5,
         radius_max=1.5,
-        elevation_min=5,
+        elevation_min=10,
         elevation_max=89,
         uniform_volume=False,
     )
@@ -235,3 +247,5 @@ for obj in placed_objects:
     bproc.writer.write_hdf5(output_path, data, append_to_existing_output=True)
     json.dump(poses, open(output_path / "poses.json", "w"))
     obj.hide(True)
+    obj.clear_materials()
+    obj.disable_rigidbody()
