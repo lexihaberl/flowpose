@@ -243,7 +243,8 @@ for obj in objects:
                 poses["cam_" + str(frame_idx)] = cam2world_matrix.tolist()
 
     data = bproc.renderer.render()
-    output_path = output_dir / obj.get_name()
+    obj_category = obj.get_name().split("-")[0]
+    output_path = output_dir / obj_category / obj.get_name()
     bproc.writer.write_hdf5(output_path, data, append_to_existing_output=True)
     json.dump(poses, open(output_path / "poses.json", "w"))
     obj.hide(True)

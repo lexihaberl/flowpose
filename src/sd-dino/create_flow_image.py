@@ -1,10 +1,11 @@
-import os 
+import os
 import numpy as np
 import json
 import h5py
 import matplotlib.pyplot as plt
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import argparse
 from pathlib import Path
 
@@ -17,13 +18,14 @@ import torch.nn.functional as F
 import cv2
 
 from extractor_sd import load_model, process_features_and_mask
-from utils.utils_correspondence import co_pca, resize 
+from utils.utils_correspondence import co_pca, resize
 from extractor_dino import ViTExtractor
 
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from utils.my_utils.load_data import load_data
+import random
 
 # Configuration parameters
 MASK = False
@@ -31,18 +33,18 @@ VER = "v1-5"
 PCA = False
 CO_PCA = True
 PCA_DIMS = [256, 256, 256]
-SIZE =960
+SIZE = 960
 RESOLUTION = 128
 EDGE_PAD = False
 
 FUSE_DINO = 1
 ONLY_DINO = 1
 DINOV2 = True
-MODEL_SIZE = 'small'# # 'small' or 'base', indicate dinov2 model
+MODEL_SIZE = "small"  # # 'small' or 'base', indicate dinov2 model
 TEXT_INPUT = False
 SEED = 42
-TIMESTEP = 100 #flexible from 0~200
-DIST = 'cos' # 'cos' or 'l2' or 'l1'
+TIMESTEP = 100  # flexible from 0~200
+DIST = "cos"  # 'cos' or 'l2' or 'l1'
 
 # DIST = 'l2' if FUSE_DINO and not ONLY_DINO else 'cos'; not needed only using cosine similarity at the moment, no l2 distance
 if ONLY_DINO:
@@ -63,12 +65,17 @@ def visualize_data(rgb_images, object_masks):
         plt.imshow(object_mask)
         plt.show()
 
+
 # Function to calculate cosine similarity between feature maps
 def cosine_similarity(features1, features2):
 
     # Flatten the features map
-    fm1_flat = features1.view(features1.shape[0], features1.shape[1], -1).permute(0, 2, 1)
-    fm2_flat = features2.view(features2.shape[0], features2.shape[1], -1).permute(0, 2, 1)
+    fm1_flat = features1.view(features1.shape[0], features1.shape[1], -1).permute(
+        0, 2, 1
+    )
+    fm2_flat = features2.view(features2.shape[0], features2.shape[1], -1).permute(
+        0, 2, 1
+    )
 
     # Normalize the feature maps
     fm1_norm = F.normalize(fm1_flat, p=2, dim=2)
@@ -78,60 +85,94 @@ def cosine_similarity(features1, features2):
     cosine_sim = torch.matmul(fm1_norm, fm2_norm.transpose(1, 2))
 
     # Reshape to [batch_size, height, width, height, width]
-    cosine_sim = cosine_sim.view(features1.shape[0], features1.shape[2], features1.shape[3], features2.shape[2], features2.shape[3])
+    cosine_sim = cosine_sim.view(
+        features1.shape[0],
+        features1.shape[2],
+        features1.shape[3],
+        features2.shape[2],
+        features2.shape[3],
+    )
 
     return cosine_sim
+
 
 # Function to calculate l2 distance between feature maps
 def l2_distance(features1, features2):
     # Flatten the feature maps
-    fm1_flat = features1.view(features1.shape[0], features1.shape[1], -1).permute(0, 2, 1)  # [B, H1*W1, C]
-    fm2_flat = features2.view(features2.shape[0], features2.shape[1], -1)  # [B, C, H2*W2]
+    fm1_flat = features1.view(features1.shape[0], features1.shape[1], -1).permute(
+        0, 2, 1
+    )  # [B, H1*W1, C]
+    fm2_flat = features2.view(
+        features2.shape[0], features2.shape[1], -1
+    )  # [B, C, H2*W2]
 
     # Compute the norms squared
-    fm1_norm2 = torch.sum(fm1_flat ** 2, dim=2, keepdim=True)  # [B, H1*W1, 1]
-    fm2_norm2 = torch.sum(fm2_flat ** 2, dim=1, keepdim=True)  # [B, 1, H2*W2]
+    fm1_norm2 = torch.sum(fm1_flat**2, dim=2, keepdim=True)  # [B, H1*W1, 1]
+    fm2_norm2 = torch.sum(fm2_flat**2, dim=1, keepdim=True)  # [B, 1, H2*W2]
 
     # Compute the dot product
     dot_product = torch.bmm(fm1_flat, fm2_flat)  # [B, H1*W1, H2*W2]
 
     # Compute squared L2 distance
-    l2_dist_squared = fm1_norm2 + fm2_norm2.transpose(1, 2) - 2 * dot_product  # [B, H1*W1, H2*W2]
+    l2_dist_squared = (
+        fm1_norm2 + fm2_norm2.transpose(1, 2) - 2 * dot_product
+    )  # [B, H1*W1, H2*W2]
 
     # Taking the square root gives the L2 distance, ensure non-negative distances
     l2_dist = torch.sqrt(torch.relu(l2_dist_squared) + 1e-6)
 
     # Reshape to [batch_size, height1, width1, height2, width2]
-    l2_dist = l2_dist.view(features1.shape[0], features1.shape[2], features1.shape[3], features2.shape[2], features2.shape[3])
+    l2_dist = l2_dist.view(
+        features1.shape[0],
+        features1.shape[2],
+        features1.shape[3],
+        features2.shape[2],
+        features2.shape[3],
+    )
 
     return l2_dist
 
+
 # Function to compute features for a pair of images
-def compute_pair_feature(model, aug, image_pairs=[], category="an object", mask=False, real_size=960, dist = DIST):
+def compute_pair_feature(
+    model,
+    aug,
+    image_pairs=[],
+    category="an object",
+    mask=False,
+    real_size=960,
+    dist=DIST,
+):
     if type(category) == str:
         category = [category]
     img_size = 840 if DINOV2 else 244
-    model_dict={'small':'dinov2_vits14',
-                'base':'dinov2_vitb14',
-                'large':'dinov2_vitl14',
-                'giant':'dinov2_vitg14'}
-    
-    model_type = model_dict[MODEL_SIZE] if DINOV2 else 'dino_vits8'
+    model_dict = {
+        "small": "dinov2_vits14",
+        "base": "dinov2_vitb14",
+        "large": "dinov2_vitl14",
+        "giant": "dinov2_vitg14",
+    }
+
+    model_type = model_dict[MODEL_SIZE] if DINOV2 else "dino_vits8"
     layer = 11 if DINOV2 else 9
-    if 'l' in model_type:
+    if "l" in model_type:
         layer = 23
-    elif 'g' in model_type:
+    elif "g" in model_type:
         layer = 39
-    facet = 'token' if DINOV2 else 'key'
+    facet = "token" if DINOV2 else "key"
     stride = 14 if DINOV2 else 4
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     # indiactor = 'v2' if DINOV2 else 'v1'
     # model_size = model_type.split('vit')[-1]
     extractor = ViTExtractor(model_type, stride, device=device)
-    patch_size = extractor.model.patch_embed.patch_size[0] if DINOV2 else extractor.model.patch_embed.patch_size
+    patch_size = (
+        extractor.model.patch_embed.patch_size[0]
+        if DINOV2
+        else extractor.model.patch_embed.patch_size
+    )
     num_patches = int(patch_size / stride * (img_size // patch_size - 1) + 1)
-    
-    input_text = "a photo of "+category[-1][0] if TEXT_INPUT else None
+
+    input_text = "a photo of " + category[-1][0] if TEXT_INPUT else None
 
     pbar = tqdm(total=len(image_pairs))
     result = []
@@ -150,35 +191,90 @@ def compute_pair_feature(model, aug, image_pairs=[], category="an object", mask=
         with torch.no_grad():
             if not CO_PCA:
                 if not ONLY_DINO:
-                    img1_desc = process_features_and_mask(model, aug, img1_input, input_text=input_text, mask=False, pca=PCA).reshape(1,1,-1, num_patches**2).permute(0,1,3,2)
-                    img2_desc = process_features_and_mask(model, aug, img2_input, category[-1], input_text=input_text,  mask=mask, pca=PCA).reshape(1,1,-1, num_patches**2).permute(0,1,3,2)
+                    img1_desc = (
+                        process_features_and_mask(
+                            model,
+                            aug,
+                            img1_input,
+                            input_text=input_text,
+                            mask=False,
+                            pca=PCA,
+                        )
+                        .reshape(1, 1, -1, num_patches**2)
+                        .permute(0, 1, 3, 2)
+                    )
+                    img2_desc = (
+                        process_features_and_mask(
+                            model,
+                            aug,
+                            img2_input,
+                            category[-1],
+                            input_text=input_text,
+                            mask=mask,
+                            pca=PCA,
+                        )
+                        .reshape(1, 1, -1, num_patches**2)
+                        .permute(0, 1, 3, 2)
+                    )
                 if FUSE_DINO:
                     img1_batch = extractor.preprocess_pil(img1)
-                    img1_desc_dino = extractor.extract_descriptors(img1_batch.to(device), layer, facet)
+                    img1_desc_dino = extractor.extract_descriptors(
+                        img1_batch.to(device), layer, facet
+                    )
                     img2_batch = extractor.preprocess_pil(img2)
-                    img2_desc_dino = extractor.extract_descriptors(img2_batch.to(device), layer, facet)
+                    img2_desc_dino = extractor.extract_descriptors(
+                        img2_batch.to(device), layer, facet
+                    )
 
             else:
                 if not ONLY_DINO:
-                    features1 = process_features_and_mask(model, aug, img1_input, input_text=input_text,  mask=False, raw=True)
-                    features2 = process_features_and_mask(model, aug, img2_input, input_text=input_text,  mask=False, raw=True)
-                    processed_features1, processed_features2 = co_pca(features1, features2, PCA_DIMS)
-                    img1_desc = processed_features1.reshape(1, 1, -1, num_patches**2).permute(0,1,3,2)
-                    img2_desc = processed_features2.reshape(1, 1, -1, num_patches**2).permute(0,1,3,2)
+                    features1 = process_features_and_mask(
+                        model,
+                        aug,
+                        img1_input,
+                        input_text=input_text,
+                        mask=False,
+                        raw=True,
+                    )
+                    features2 = process_features_and_mask(
+                        model,
+                        aug,
+                        img2_input,
+                        input_text=input_text,
+                        mask=False,
+                        raw=True,
+                    )
+                    processed_features1, processed_features2 = co_pca(
+                        features1, features2, PCA_DIMS
+                    )
+                    img1_desc = processed_features1.reshape(
+                        1, 1, -1, num_patches**2
+                    ).permute(0, 1, 3, 2)
+                    img2_desc = processed_features2.reshape(
+                        1, 1, -1, num_patches**2
+                    ).permute(0, 1, 3, 2)
                 if FUSE_DINO:
                     img1_batch = extractor.preprocess_pil(img1)
-                    img1_desc_dino = extractor.extract_descriptors(img1_batch.to(device), layer, facet)
+                    img1_desc_dino = extractor.extract_descriptors(
+                        img1_batch.to(device), layer, facet
+                    )
                     img2_batch = extractor.preprocess_pil(img2)
-                    img2_desc_dino = extractor.extract_descriptors(img2_batch.to(device), layer, facet)
-                
-            if dist == 'l1' or dist == 'l2':
+                    img2_desc_dino = extractor.extract_descriptors(
+                        img2_batch.to(device), layer, facet
+                    )
+
+            if dist == "l1" or dist == "l2":
                 # normalize the features
                 if not ONLY_DINO:
                     img1_desc = img1_desc / img1_desc.norm(dim=-1, keepdim=True)
                     img2_desc = img2_desc / img2_desc.norm(dim=-1, keepdim=True)
                 if FUSE_DINO:
-                    img1_desc_dino = img1_desc_dino / img1_desc_dino.norm(dim=-1, keepdim=True)
-                    img2_desc_dino = img2_desc_dino / img2_desc_dino.norm(dim=-1, keepdim=True)
+                    img1_desc_dino = img1_desc_dino / img1_desc_dino.norm(
+                        dim=-1, keepdim=True
+                    )
+                    img2_desc_dino = img2_desc_dino / img2_desc_dino.norm(
+                        dim=-1, keepdim=True
+                    )
 
             if FUSE_DINO and not ONLY_DINO:
                 # cat two features together
@@ -194,24 +290,29 @@ def compute_pair_feature(model, aug, image_pairs=[], category="an object", mask=
         pbar.update(1)
     return result
 
+
 def calculate_flow(similarity_tensor, object_mask):
     flow_field = torch.zeros(similarity_tensor.shape[0], similarity_tensor.shape[1], 2)
     for x in range(similarity_tensor.shape[1]):
         for y in range(similarity_tensor.shape[0]):
             if object_mask[y, x] == 0:
                 continue
-            argmax = torch.argmax(similarity_tensor[y,x, :, :])
+            argmax = torch.argmax(similarity_tensor[y, x, :, :])
             argmax_y = argmax // similarity_tensor.shape[2]
             argmax_x = argmax % similarity_tensor.shape[2]
             flow_y = argmax_y - y
             flow_x = argmax_x - x
-            flow_field[y,x,0] = flow_y
-            flow_field[y,x,1] = flow_x
+            flow_field[y, x, 0] = flow_y
+            flow_field[y, x, 1] = flow_x
     return flow_field
+
 
 def calculate_flow_vectorized(similarity_tensor, object_mask):
     object_mask = torch.tensor(object_mask).to(similarity_tensor.device)
-    y_indices, x_indices = torch.meshgrid(torch.arange(similarity_tensor.shape[0]), torch.arange(similarity_tensor.shape[1]))
+    y_indices, x_indices = torch.meshgrid(
+        torch.arange(similarity_tensor.shape[0]),
+        torch.arange(similarity_tensor.shape[1]),
+    )
     y_indices = y_indices.to(similarity_tensor.device)
     x_indices = x_indices.to(similarity_tensor.device)
 
@@ -229,78 +330,95 @@ def calculate_flow_vectorized(similarity_tensor, object_mask):
 
     return flow_field
 
-if __name__ == "__main__":
-    rgb_images, object_masks, poses, scene_names = load_data(Path("../output", "dataset_rendered"))
-    output_dir = Path("../output", "flow_images")
-    if os.path.exists(output_dir):
-        raise ValueError("Output directory exists")
-    os.makedirs(output_dir)
 
-    batch_size = 512 # batch size for how many pairs to process with one function call
-    
-    object_names = list(rgb_images.keys())
+def generateImagePairs(object_names, num_pairs, rgb_images, object_masks, scene_names):
     image_pairs = []
     masks = []
     pair_names = []
-    for idx in rgb_images[object_names[0]].keys():
-        image1 = rgb_images[object_names[0]][idx]
-        mask1 = object_masks[object_names[0]][idx]
-        scene_name1 = scene_names[object_names[0]][idx]
+    pair_names_set = set()
+    print("Generating image pairs")
+    for _ in range(num_pairs):
+        while True:
+            object1, object2 = random.sample(object_names, 2)
+            idx1 = random.choice(list(rgb_images[object1].keys()))
+            idx2 = random.choice(list(rgb_images[object2].keys()))
+            scene_name1 = scene_names[object1][idx1]
+            scene_name2 = scene_names[object2][idx2]
+            pair_name = scene_name1 + "__" + scene_name2
+            if pair_name in pair_names_set:
+                continue
+            else:
+                pair_names_set.add(pair_name)
+                break
+        image1 = rgb_images[object1][idx1]
+        image2 = rgb_images[object2][idx2]
+        mask1 = object_masks[object1][idx1]
+        mask2 = object_masks[object2][idx2]
         mask1 = Image.fromarray(mask1)
         mask1 = resize(mask1, RESOLUTION, resize=True, to_pil=False, edge=EDGE_PAD)
-        mask1 = torch.tensor(mask1).to('cuda')
-        for idx2 in rgb_images[object_names[1]].keys():
-            image2 = rgb_images[object_names[1]][idx2]
-            mask2 = object_masks[object_names[1]][idx2]
-            scene_name2 = scene_names[object_names[1]][idx2]
-            image_pairs.append([image1, image2])
-            pair_names.append(scene_name1 + "__" + scene_name2)
-            mask2 = Image.fromarray(mask2)
-            mask2 = resize(mask2, RESOLUTION, resize=True, to_pil=False, edge=EDGE_PAD)
-            mask2 = torch.tensor(mask2).to('cuda')
-            masks.append([mask1, mask2])
-    
-    # Load the stable diffusion model
-    if not ONLY_DINO:
-        model, aug = load_model(diffusion_ver=VER, image_size=SIZE, num_timesteps=TIMESTEP)
-    else:
-        model = None
-        aug = None
+        mask1 = torch.tensor(mask1).to("cuda")
+        mask2 = Image.fromarray(mask2)
+        mask2 = resize(mask2, RESOLUTION, resize=True, to_pil=False, edge=EDGE_PAD)
+        mask2 = torch.tensor(mask2).to("cuda")
+        image_pairs.append([image1, image2])
+        masks.append([mask1, mask2])
+        pair_names.append(pair_name)
+    return image_pairs, masks, pair_names
 
-    # Category for the images, and pair them
-    category = "shoes"
-
-    # Compute the features for the image pair
+def create_flow_images(image_pairs, masks, pair_names, output_dir,  model, aug, category, batch_size):
+        # Compute the features for the image pair
     num_batches = len(image_pairs) // batch_size
     for batch_num in range(num_batches):
         print(f"Processing batch {batch_num+1}/{num_batches}")
         start_idx = batch_num * batch_size
         end_idx = (batch_num + 1) * batch_size
         print(f"Processing images {start_idx} to {end_idx}")
-        print(f"{len(image_pairs)} image pairs, {len(masks)} masks, {len(pair_names)} pair names")
+        print(
+            f"{len(image_pairs)} image pairs, {len(masks)} masks, {len(pair_names)} pair names"
+        )
         if end_idx > len(image_pairs):
-            result = compute_pair_feature(model, aug, image_pairs=image_pairs[start_idx:], mask=MASK, category=category)
+            result = compute_pair_feature(
+                model,
+                aug,
+                image_pairs=image_pairs[start_idx:],
+                mask=MASK,
+                category=category,
+            )
             masks_batch = masks[start_idx:]
             pair_names_batch = pair_names[start_idx:]
         else:
-            result = compute_pair_feature(model, aug, image_pairs=image_pairs[start_idx:end_idx], mask=MASK, category=category)
+            result = compute_pair_feature(
+                model,
+                aug,
+                image_pairs=image_pairs[start_idx:end_idx],
+                mask=MASK,
+                category=category,
+            )
             masks_batch = masks[start_idx:end_idx]
             pair_names_batch = pair_names[start_idx:end_idx]
         for i in range(len(result)):
             feature1 = result[i][0]
             feature2 = result[i][1]
-            
-            src_feature_reshaped = feature1.squeeze().permute(1,0).reshape(1,-1,60,60).cuda()
-            tgt_feature_reshaped = feature2.squeeze().permute(1,0).reshape(1,-1,60,60).cuda()
+
+            src_feature_reshaped = (
+                feature1.squeeze().permute(1, 0).reshape(1, -1, 60, 60).cuda()
+            )
+            tgt_feature_reshaped = (
+                feature2.squeeze().permute(1, 0).reshape(1, -1, 60, 60).cuda()
+            )
             # Upsample the features for higher resolution
-            src_feature_upsampled = F.interpolate(src_feature_reshaped, size=(RESOLUTION, RESOLUTION), mode='bilinear')
-            tgt_feature_upsampled = F.interpolate(tgt_feature_reshaped, size=(RESOLUTION, RESOLUTION), mode='bilinear')
+            src_feature_upsampled = F.interpolate(
+                src_feature_reshaped, size=(RESOLUTION, RESOLUTION), mode="bilinear"
+            )
+            tgt_feature_upsampled = F.interpolate(
+                tgt_feature_reshaped, size=(RESOLUTION, RESOLUTION), mode="bilinear"
+            )
 
             # Compute volume of cosine similarity
-            if DIST == 'cos':
-                volume = cosine_similarity(src_feature_upsampled,tgt_feature_upsampled)
-            elif DIST == 'l2':
-                volume = l2_distance(src_feature_upsampled,tgt_feature_upsampled)
+            if DIST == "cos":
+                volume = cosine_similarity(src_feature_upsampled, tgt_feature_upsampled)
+            elif DIST == "l2":
+                volume = l2_distance(src_feature_upsampled, tgt_feature_upsampled)
 
             # Extract the similarity tensor
             similarity_tensor = volume.squeeze()
@@ -310,8 +428,48 @@ if __name__ == "__main__":
             similarity_tensor[mask0 == 0, :, :] = 0
             similarity_tensor[:, :, mask1 == 0] = 0
 
-
-            flow = calculate_flow_vectorized(similarity_tensor, mask0).to('cpu').numpy()
+            flow = calculate_flow_vectorized(similarity_tensor, mask0).to("cpu").numpy()
             image_name = pair_names_batch[i]
             save_path = os.path.join(output_dir, image_name)
             np.save(save_path, flow)
+
+if __name__ == "__main__":
+    category = "shoe"
+    rgb_images, object_masks, poses, scene_names = load_data(
+        Path("../output", "dataset_rendered", category)
+    )
+    output_dir = Path("../output", "flow_images")
+    if os.path.exists(output_dir):
+        raise ValueError("Output directory exists")
+    os.makedirs(output_dir / "train")
+    os.makedirs(output_dir / "test")
+
+    num_pairs_train = 512 * 80
+    num_pairs_test = 512 * 20
+    batch_size = 512  # batch size for how many pairs to process with one function call
+
+    object_names = list(rgb_images.keys())
+    train_set_objects = random.sample(object_names, int(len(object_names) * 4 / 5))
+    test_set_objects = list(set(object_names) - set(train_set_objects))
+    image_pairs_train, masks_train, pair_names_train = generateImagePairs(
+        train_set_objects, num_pairs_train, rgb_images, object_masks, scene_names
+    )
+    image_pairs_test, masks_test, pair_names_test = generateImagePairs(
+        test_set_objects, num_pairs_test, rgb_images, object_masks, scene_names
+    )
+
+    print("Loading models")
+    # Load the stable diffusion model
+    if not ONLY_DINO:
+        model, aug = load_model(
+            diffusion_ver=VER, image_size=SIZE, num_timesteps=TIMESTEP
+        )
+    else:
+        model = None
+        aug = None
+    
+    create_flow_images(image_pairs_train, masks_train, pair_names_train, output_dir / "train", model, aug, category, batch_size)
+    create_flow_images(image_pairs_test, masks_test, pair_names_test, output_dir / "test", model, aug, category, batch_size)
+    
+
+

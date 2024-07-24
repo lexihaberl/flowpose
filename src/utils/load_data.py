@@ -9,8 +9,6 @@ def load_data(path):
     poses = {}
     names = {}
     for object_name in sorted(os.listdir(path)):
-        if "flow_images" in object_name:
-            continue
         rgb_images_obj = {}
         object_masks = {}
         scene_names = {}
