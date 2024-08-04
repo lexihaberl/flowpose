@@ -434,6 +434,7 @@ def create_flow_images(image_pairs, masks, pair_names, output_dir,  model, aug, 
             np.save(save_path, flow)
 
 if __name__ == "__main__":
+    print("Loading data")
     category = "shoe"
     rgb_images, object_masks, poses, scene_names = load_data(
         Path("../output", "dataset_rendered", category)
@@ -468,6 +469,7 @@ if __name__ == "__main__":
         model = None
         aug = None
     
+    print("Creating flow images")
     create_flow_images(image_pairs_train, masks_train, pair_names_train, output_dir / "train", model, aug, category, batch_size)
     create_flow_images(image_pairs_test, masks_test, pair_names_test, output_dir / "test", model, aug, category, batch_size)
     
