@@ -1,7 +1,8 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torchvision.models import resnet18, ResNet18_Weights
+from torchvision.models import resnet18, ResNet18_Weights, resnet152, ResNet152_Weights
+import roma
 
 class BasicCNN(nn.Module):
     def __init__(self, dropout_p = 0.5):
@@ -44,23 +45,47 @@ class BasicCNN(nn.Module):
         return self
 
 class Resnet18(nn.Module):
-    def __init__(self, obj_diameter):
+    def __init__(self, obj_diameter, pretrained=False):
         super().__init__()
-        weights = ResNet18_Weights.DEFAULT
-        self.model = resnet18(weights = weights) 
+        if pretrained:
+            weights = ResNet18_Weights.DEFAULT
+            self.model = resnet18(weights = weights)
+        else:
+            self.model = resnet18()
         self.model.fc = nn.Linear(512, 9)
         self.obj_diameter = obj_diameter
     
     def forward(self, x):
         out = self.model(x)
         transl = out[:, :3] * self.obj_diameter
-        rot_r1 = out[:, 3:6]
-        rot_r2 = out[:, 6:9]
-        R1 = rot_r1 / torch.norm(rot_r1, dim=1).view(-1, 1)
-        R3 = torch.cross(R1, rot_r2)
-        R3 = R3 / torch.norm(R3, dim=1).view(-1, 1)
-        R2 = torch.cross(R3, R1)
-        rotmat = torch.stack([R1, R2, R3], dim=2)
+        rot_6D = out[:, 3:]
+        rotmat = roma.special_gramschmidt(rot_6D.reshape(-1, 3, 2))
+        out = torch.cat([transl, rotmat.flatten(start_dim=1)], dim=1)
+        return out
+    
+    def save(self, path):
+        torch.save(self.model.state_dict(), path)
+    
+    def load(self, path):
+        self.model.load_state_dict(torch.load(path))
+        return self
+    
+class Resnet152(nn.Module):
+    def __init__(self, obj_diameter, pretrained=False):
+        super().__init__()
+        if pretrained:
+            weights = ResNet152_Weights.DEFAULT
+            self.model = resnet152(weights = weights)
+        else:
+            self.model = resnet152()
+        self.model.fc = nn.Linear(2048, 9)
+        self.obj_diameter = obj_diameter
+    
+    def forward(self, x):
+        out = self.model(x)
+        transl = out[:, :3] * self.obj_diameter
+        rot_6D = out[:, 3:]
+        rotmat = roma.special_gramschmidt(rot_6D.reshape(-1, 3, 2))
         out = torch.cat([transl, rotmat.flatten(start_dim=1)], dim=1)
         return out
     
