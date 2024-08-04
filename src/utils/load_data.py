@@ -2,6 +2,7 @@ import os
 import json
 import numpy as np
 import h5py
+import open3d as o3d
 
 def load_data(path):
     rgb_images = {}
@@ -52,3 +53,13 @@ def load_poses_json(filepath):
     with open(filepath) as f:
         data = json.load(f)
     return data
+
+def load_meshes_o3d(meshes_path = "../../data/housecat6d_meshes/shoe"):
+    print("Loading meshes...")
+    meshes = {}
+    for file in os.listdir(meshes_path):
+        if file.endswith(".obj"):
+            mesh = o3d.io.read_triangle_model(os.path.join(meshes_path, file))
+            meshes[file.split(".")[0]] = mesh
+    print(f"Loaded {len(meshes)} meshes.")
+    return meshes
