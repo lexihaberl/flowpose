@@ -33,7 +33,7 @@ class Trainer():
     def _train_epoch(self, epoch_idx: int):
         self.model.train()
         train_loss = 0
-        for batch, (X, y) in enumerate(self.train_loader):
+        for (X, y) in tqdm(self.train_loader, desc="Batches"):
             X, y = X.to(self.device), y.to(self.device)
 
             # Compute prediction error
@@ -66,7 +66,7 @@ class Trainer():
 
     def train(self) -> None:
         best_val_loss = np.inf
-        for epoch_idx in tqdm(range(self.num_epochs)):
+        for epoch_idx in tqdm(range(self.num_epochs), desc="Epochs"):
             train_loss = self._train_epoch(epoch_idx)
             if epoch_idx % self.val_frequency == 0 or epoch_idx == self.num_epochs - 1:
                 val_loss = self._val_epoch(epoch_idx)
