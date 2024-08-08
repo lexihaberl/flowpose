@@ -77,8 +77,8 @@ class Trainer():
             self.lr_scheduler.step()
 
         
-alpha = 1/2
-beta = 1/2
+alpha = 3/4
+beta = 1/4
 def frobenius_loss(pred, target):
     pred[:, :3] = pred[:, :3]
     # first three elements are translation, next 9 are flattened rotation matrix
